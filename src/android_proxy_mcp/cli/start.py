@@ -4,6 +4,8 @@ Android Proxy 启动脚本
 交互式启动代理服务，使用 mitmproxy 原生命令。
 """
 
+import ipaddress
+import platform
 import socket
 import subprocess
 import sys
@@ -21,43 +23,67 @@ logger.add(
 )
 
 
-def get_local_ip() -> str:
-    """获取本机局域网 IP（优先 Wi-Fi 接口，避免返回 VPN 地址）"""
-    # 优先尝试获取 Wi-Fi 接口 IP（macOS: en0, Linux: wlan0）
-    import platform
-    import subprocess
-
-    wifi_interfaces = ["en0", "en1"] if platform.system() == "Darwin" else ["wlan0", "wlan1"]
-    for iface in wifi_interfaces:
-        try:
+def _enumerate_ipv4() -> list[str]:
+    """枚举本机所有 IPv4 地址（跨平台）"""
+    ips: list[str] = []
+    system = platform.system()
+    try:
+        if system == "Windows":
+            # Get-NetIPAddress 的 IPAddress 字段不受系统语言影响
             result = subprocess.run(
-                ["ipconfig", "getifaddr", iface] if platform.system() == "Darwin"
-                else ["ip", "-4", "addr", "show", iface],
-                capture_output=True, text=True, timeout=3
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-NetIPAddress -AddressFamily IPv4).IPAddress"],
+                capture_output=True, text=True, timeout=5,
             )
-            ip = result.stdout.strip()
-            if ip and not ip.startswith("127."):
-                # Linux ip 命令需要额外解析
-                if platform.system() != "Darwin":
-                    for line in ip.splitlines():
-                        if "inet " in line:
-                            ip = line.strip().split()[1].split("/")[0]
-                            break
-                    else:
-                        continue
-                return ip
-        except Exception:
-            continue
+            ips += [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        elif system == "Linux":
+            result = subprocess.run(
+                ["hostname", "-I"], capture_output=True, text=True, timeout=5
+            )
+            ips += result.stdout.split()
+        else:  # macOS
+            for iface in ("en0", "en1"):
+                result = subprocess.run(
+                    ["ipconfig", "getifaddr", iface],
+                    capture_output=True, text=True, timeout=3,
+                )
+                if result.stdout.strip():
+                    ips.append(result.stdout.strip())
+    except Exception:
+        pass
 
-    # 回退：通过 UDP 连接获取（可能返回 VPN 地址）
+    # 通用兜底：主机名解析 + UDP 路由探测
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.append(info[4][0])
+    except Exception:
+        pass
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
+        ips.append(s.getsockname()[0])
         s.close()
-        return ip
     except Exception:
-        return "127.0.0.1"
+        pass
+    return ips
+
+
+def list_local_ips() -> list[str]:
+    """列出本机所有可用的 IPv4 地址（去重，排除回环/未指定，保留顺序）"""
+    seen: set[str] = set()
+    result: list[str] = []
+    for ip in _enumerate_ipv4():
+        if ip in seen:
+            continue
+        try:
+            addr = ipaddress.IPv4Address(ip)
+        except ValueError:
+            continue
+        if addr.is_loopback or addr.is_unspecified:
+            continue
+        seen.add(ip)
+        result.append(ip)
+    return result
 
 
 def check_port_available(port: int) -> bool:
@@ -96,6 +122,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Android Proxy MCP 启动脚本")
     parser.add_argument("--port", type=int, default=8288, help="监听端口 (默认: 8288)")
+    parser.add_argument("--ip", default=None, help="手动指定手机填写的服务器 IP（覆盖自动检测，用于 VPN/TUN 等场景）")
     args = parser.parse_args()
 
     # ========== 欢迎界面 ==========
@@ -126,19 +153,23 @@ def main():
         except (EOFError, KeyboardInterrupt):
             sys.exit(1)
 
-    local_ip = get_local_ip()
+    ip_list = [args.ip] if args.ip else list_local_ips()
 
     # ========== 显示配置信息 ==========
     logger.opt(colors=True).info(f"\n<cyan>{'═' * 60}</cyan>")
     logger.opt(colors=True).info("<cyan>  手机配置</cyan>")
     logger.opt(colors=True).info(f"<cyan>{'═' * 60}</cyan>\n")
 
-    logger.info("    手机 Wi-Fi 代理设置:")
+    logger.info("    手机 Wi-Fi 代理设置（填写与手机同一局域网的那个 IP）:")
     logger.info("")
-    logger.info(f"       ┌─────────────────────────────────┐")
-    logger.opt(colors=True).info(f"       │  服务器: <cyan>{local_ip:^20}</cyan> │")
-    logger.opt(colors=True).info(f"       │  端  口: <cyan>{args.port:^20}</cyan> │")
-    logger.info(f"       └─────────────────────────────────┘")
+    logger.opt(colors=True).info(f"       端口: <cyan>{args.port}</cyan>")
+    logger.info("")
+    if ip_list:
+        logger.info("       可用 IP（手机和电脑要在同一个网段，通常是 192.168.x.x）:")
+        for ip in ip_list:
+            logger.opt(colors=True).info(f"         • <cyan>{ip}</cyan>")
+    else:
+        logger.warning("       未检测到本机 IP，请用 ipconfig 手动查看")
     logger.info("")
     logger.opt(colors=True).info("    证书安装: 手机浏览器访问 <green>http://mitm.it</green>")
     logger.info("")
