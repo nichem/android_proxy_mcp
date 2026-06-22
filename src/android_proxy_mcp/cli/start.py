@@ -150,7 +150,7 @@ def main():
 
     try:
         # 直接使用 mitmdump，流量会保存到 SQLite
-        from ..core.sqlite_store import SQLiteTrafficStore
+        from ..core.sqlite_store import RUNTIME_DIR, SQLiteTrafficStore
 
         db_path = SQLiteTrafficStore.get_default_path()
         store = SQLiteTrafficStore(db_path)
@@ -163,7 +163,7 @@ import time
 from pathlib import Path
 import sqlite3
 
-DB_PATH = "{db_path}"
+DB_PATH = {str(db_path)!r}
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -247,8 +247,8 @@ def response(flow):
         conn.close()
 '''
 
-        # 写入临时 addon 脚本
-        addon_path = "/tmp/mitmproxy_addon.py"
+        # 写入临时 addon 脚本（与数据库同目录，跨平台）
+        addon_path = str(RUNTIME_DIR / "mitmproxy_addon.py")
         with open(addon_path, "w") as f:
             f.write(addon_script)
 

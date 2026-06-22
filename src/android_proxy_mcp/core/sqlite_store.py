@@ -12,8 +12,12 @@ from threading import Lock
 
 from .models import TrafficRecord
 
+# 项目根目录（core -> android_proxy_mcp -> src -> 项目根）
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# 运行时文件目录（跨平台，已在 .gitignore 中忽略）
+RUNTIME_DIR = PROJECT_ROOT / ".runtime"
 # 默认数据库路径
-DEFAULT_DB_PATH = Path("/tmp/android-proxy-traffic.db")
+DEFAULT_DB_PATH = RUNTIME_DIR / "android-proxy-traffic.db"
 
 
 class SQLiteTrafficStore:
@@ -35,6 +39,7 @@ class SQLiteTrafficStore:
             max_size: 最大存储条数
         """
         self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.max_size = max_size
         self._lock = Lock()
         self._init_db()
